@@ -176,3 +176,242 @@ jl_o_done:
 jl_pc_at:
         .short  -1                      | the boundary the pre-check sent for
         .align  2
+
+| =============================================================================
+| The SCALE SETUP field ([FUNC] + [PAGE], window 0x460d1dfc, drawer 0x40047d08).
+| Stock fields (cursor 0x460d1e00): 0/1/2 in NORMAL, 0..4 in PER TRACK; the
+| LEVEL encoder (0x4004c930) dispatches on it. JUMP is field 5, reached after
+| the last stock field in both modes. Window coordinates are the drawer's:
+| x from the left, y from the bottom (the mode icons are drawn at y 5).
+
+        .equ    JL_X0,  0x4c                    | as the scale fields' underline
+        .equ    JL_X1,  0x54
+        .equ    JL_TY,  8                       | text row (from the bottom)
+        .equ    JL_UY,  4                       | underline row (2 is the window border)
+
+| a0 := the CURRENT pattern (UI: 0x46c82456 bank base + CUR_PATTERN x 0x8ed8),
+| d1 := its offset; d0 clobbered. As the stock editors do (0x4004cb76..).
+jl_curpat:
+        mvz.b   0x80000004,%d1
+        move.l  #0x8ed8,%d0
+        muls.l  %d0,%d1
+        move.l  0x46c82456,%d0
+        add.l   %d1,%d0
+        move.l  %d0,%a0
+        rts
+
+| d0 := 0 in NORMAL, nonzero in PER TRACK (pattern +0x8e55); a0, d1 clobbered
+jl_pertrack:
+        bsr     jl_curpat
+        move.l  #0x8e55,%d0
+        mvs.b   (%a0,%d0.l),%d0
+        rts
+
+| d0 := the JUMP index of the current pattern: 0 none, 1 INS .. 7 16X
+jl_index:
+        bsr     jl_curpat
+        move.l  #0x8e56,%d0
+        mvs.b   (%a0,%d0.l),%d0
+        moveq   #-2,%d1
+        cmp.l   %d1,%d0
+        bgt     jl_ix_none
+        moveq   #-8,%d1
+        cmp.l   %d1,%d0
+        blt     jl_ix_none
+        neg.l   %d0
+        subq.l  #1,%d0                          | -2 -> 1 .. -8 -> 7
+        rts
+jl_ix_none:
+        moveq   #0,%d0
+        rts
+
+| ---- next / previous field: SymbolRefs in the key table at 0x400cb606 and
+| 0x400cb5ec (stock 0x40048628 / 0x4004867c); both tail into the drawer.
+        .globl  jl_next
+jl_next:
+        move.l  0x460d1e00,%d2
+        moveq   #5,%d0
+        cmp.l   %d0,%d2
+        beq     jl_n_zero                       | JUMP -> the first field
+        bsr     jl_pertrack
+        tst.l   %d0
+        bne     jl_n_pt
+        moveq   #2,%d0
+        cmp.l   %d0,%d2
+        bge     jl_n_jump                       | NORMAL: 2 -> JUMP
+        bra     jl_n_inc
+jl_n_pt:
+        moveq   #4,%d0
+        cmp.l   %d0,%d2
+        bge     jl_n_jump                       | PER TRACK: 4 -> JUMP
+jl_n_inc:
+        addq.l  #1,%d2
+        bra     jl_n_set
+jl_n_jump:
+        moveq   #5,%d2
+        bra     jl_n_set
+jl_n_zero:
+        moveq   #0,%d2
+jl_n_set:
+        move.l  %d2,0x460d1e00
+        jmp     0x40047d08
+
+        .globl  jl_prev
+jl_prev:
+        move.l  0x460d1e00,%d2
+        tst.l   %d2
+        beq     jl_p_jump                       | first field -> JUMP
+        moveq   #5,%d0
+        cmp.l   %d0,%d2
+        bne     jl_p_dec
+        bsr     jl_pertrack                     | JUMP -> the last stock field
+        moveq   #4,%d2
+        tst.l   %d0
+        bne     jl_n_set
+        moveq   #2,%d2
+        bra     jl_n_set
+jl_p_dec:
+        subq.l  #1,%d2
+        bsr     jl_pertrack
+        tst.l   %d0
+        bne     jl_n_set
+        moveq   #2,%d0                          | NORMAL: a stale 3/4 -> 2
+        cmp.l   %d0,%d2
+        ble     jl_n_set
+        move.l  %d0,%d2
+        bra     jl_n_set
+jl_p_jump:
+        moveq   #5,%d2
+        bra     jl_n_set
+
+| ---- the drawer's NORMAL-mode clamp, 0x40047e86 (16 bytes: moveq #2,d0;
+| cmp.l 0x460d1e00,d0; bcc; move.l d0,0x460d1e00): stock forces any field
+| above 2 to 2; JUMP (5) is kept.
+        .globl  jl_clamp
+jl_clamp:
+        move.l  0x460d1e00,%d0
+        subq.l  #3,%d0
+        bcs     jl_c_done                       | 0..2
+        subq.l  #2,%d0
+        bcc     jl_c_done                       | 5 (or anything past 4)
+        moveq   #2,%d0                          | 3, 4 -> 2
+        move.l  %d0,0x460d1e00
+jl_c_done:
+        rts
+
+| ---- the LEVEL encoder, 0x4004cb50 (8 bytes: moveq #4,d1; cmp.l d0,d1;
+| bne.w 0x4004cbe2), d0 = the field, d3 = the step, positive clockwise (stock
+| subtracts it from the scale index, whose table runs 2x .. 1/8x).
+| d0-d2/a0-a1 are free: the tail at 0x4004cbe2 restores d2-d4.
+        .globl  jl_enc
+jl_enc:
+        moveq   #4,%d1
+        cmp.l   %d0,%d1
+        bne     jl_e_5
+        jmp     0x4004cb58                      | stock field 4
+jl_e_5:
+        moveq   #5,%d1
+        cmp.l   %d0,%d1
+        bne     jl_e_tail
+        bsr     jl_index
+        move.l  %d0,%d2                         | old index
+        add.l   %d3,%d0                         | clockwise (d3 > 0) steps down the list
+        bge     jl_e_lo
+        moveq   #0,%d0
+jl_e_lo:
+        moveq   #7,%d1
+        cmp.l   %d1,%d0
+        ble     jl_e_hi
+        move.l  %d1,%d0
+jl_e_hi:
+        cmp.l   %d2,%d0
+        beq     jl_e_tail                       | unchanged
+        move.l  %d0,%d2                         | new index
+        bsr     jl_curpat                       | a0 = pattern, d1 = its offset
+        tst.l   %d2
+        bne     jl_e_set
+        moveq   #-1,%d0                         | none: USE PRJ SET.
+        bra     jl_e_write
+jl_e_set:
+        moveq   #-1,%d0
+        sub.l   %d2,%d0                         | 1 -> -2 .. 7 -> -8
+jl_e_write:
+        move.l  %a0,%a1
+        adda.l  #0x8e56,%a1
+        move.b  %d0,(%a1)
+        lea     0x1001efa4,%a1                  | the UI mirror (as 0x40081df8..)
+        move.b  %d0,(%a1,%d1.l)
+        move.l  0x46c82456,%a1                  | bank dirty (as 0x4004cbca..)
+        move.l  #0x9b332,%d0
+        moveq   #1,%d1
+        move.l  %d1,(%a1,%d0.l)
+        move.l  %d1,0x100f8598
+        jsr     0x40027e00
+jl_e_tail:
+        jmp     0x4004cbe2
+
+| ---- the drawer, 0x40048610 (8 bytes: moveq #1,d0; move.l d0,0x46c7c72c),
+| after the mode icons, in both modes; d4 = the drawing context. Every
+| register is restored from the frame after this (0x4004861c).
+        .globl  jl_draw
+jl_draw:
+        moveq   #1,%d0                          | displaced
+        move.l  %d0,0x46c7c72c                  | displaced
+        bsr     jl_index
+        lsl.l   #2,%d0
+        lea     jl_names(%pc),%a0
+        move.l  (%a0,%d0.l),%d0
+        lea     jl_strs(%pc),%a0
+        add.l   %a0,%d0                         | the label (position independent)
+        move.l  %d0,-(%sp)
+        pea     0x400b37cf                      | "%s"
+        move.l  %d0,-(%sp)
+        clr.l   -(%sp)
+        clr.l   -(%sp)
+        pea     JL_TY
+        pea     JL_X0
+        move.l  %d4,-(%sp)
+        pea     0x400ba876                      | the scale fields' font
+        jsr     0x40013904
+        lea     36(%sp),%sp
+        moveq   #5,%d0
+        cmp.l   0x460d1e00,%d0
+        bne     jl_dr_dots
+        pea     1                               | selected: two solid lines
+        pea     JL_X1
+        pea     JL_UY
+        pea     JL_X0
+        move.l  %d4,-(%sp)
+        jsr     0x40011910
+        lea     20(%sp),%sp
+        pea     1
+        pea     JL_X1
+        pea     JL_UY-1
+        pea     JL_X0
+        move.l  %d4,-(%sp)
+        jsr     0x40011910
+        lea     20(%sp),%sp
+        rts
+jl_dr_dots:
+        pea     JL_X1                           | not selected: dotted
+        pea     JL_UY
+        pea     JL_X0
+        move.l  %d4,-(%sp)
+        jsr     0x40011a58
+        lea     16(%sp),%sp
+        rts
+
+        .align  2
+jl_names:                                       | offsets into jl_strs
+        .long   jl_s0-jl_strs, jl_s1-jl_strs, jl_s2-jl_strs, jl_s3-jl_strs
+        .long   jl_s4-jl_strs, jl_s5-jl_strs, jl_s6-jl_strs, jl_s7-jl_strs
+jl_strs:
+jl_s0:  .asciz  "---"
+jl_s1:  .asciz  "INS"
+jl_s2:  .asciz  "EOP"
+jl_s3:  .asciz  "1x"
+jl_s4:  .asciz  "2x"
+jl_s5:  .asciz  "4x"
+jl_s6:  .asciz  "8x"
+jl_s7:  .asciz  "16x"
+        .align  2

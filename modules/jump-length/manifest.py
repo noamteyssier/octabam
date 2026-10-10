@@ -34,12 +34,18 @@ Pokes: the pattern validator's low clamp -1 -> -8 (0x4009ab54) so a loaded
 (0x40081c2c, 0x40081cb8, 0x40081db0) become "<= -1", so a JUMP pattern
 draws as USE PRJ SET. instead of indexing a label table with a negative.
 
-NOT YET: the SCALE SETUP row that sets it (window 0x460d1dfc, drawer
-0x40047d08, field cursor 0x460d1e00; RECON.md). Until it lands the byte is
-set by poking RAM under the port. Nothing is measured yet.
+THE FIELD. SCALE SETUP ([FUNC] + [PAGE]) gets a sixth field (cursor
+0x460d1e00 = 5) after the last stock one in both modes: the key table's
+next/previous handlers (0x400cb606, 0x400cb5ec) are the unit's, which order
+NORMAL 0, 1, 2, JUMP and PER TRACK 0..4, JUMP; the drawer's NORMAL clamp
+(0x40047e86) keeps 5; the LEVEL encoder's field-4 test (0x4004cb50) hands 5
+to the unit, which writes the byte as PATTERN SETTINGS' own setter does (the
+pattern, the UI mirror 0x1001efa4, the bank dirty flag); the drawer
+(0x40048610) draws the value in the scale fields' font, bottom right,
+underlined like a stock field.
 """
 
-from remix.schema import Category, Detour, Kind, Linked, Module, Poke, Proof
+from remix.schema import Category, Detour, Kind, Linked, Module, Poke, Proof, SymbolRef
 
 UNIT = "jl"
 
@@ -60,6 +66,17 @@ MODULE = Module(
         Detour(0x400a4196, bytes.fromhex("71f9800065b2" "2400" "5282"), UNIT, "jl_pre",
                "tick 2: the same decision one step ahead (program change)",
                kind="jsr", pad_to=10),
+        # the SCALE SETUP field (field 5 of the cursor 0x460d1e00)
+        Detour(0x40047e86, bytes.fromhex("7002" "b0b9460d1e00" "6406" "23c0460d1e00"), UNIT, "jl_clamp",
+               "SCALE SETUP drawer: NORMAL clamps fields 3/4 to 2, keeps JUMP", kind="jsr", pad_to=16),
+        Detour(0x4004cb50, bytes.fromhex("7204" "b280" "6600008c"), UNIT, "jl_enc",
+               "SCALE SETUP LEVEL encoder: field 5 edits JUMP", kind="jmp", pad_to=8),
+        Detour(0x40048610, bytes.fromhex("7001" "23c046c7c72c"), UNIT, "jl_draw",
+               "SCALE SETUP drawer: draws the JUMP field", kind="jsr", pad_to=8),
+    ),
+    symbol_refs=(
+        SymbolRef(0x400cb606, 0x40048628, UNIT, "jl_next", "SCALE SETUP key table: next field"),
+        SymbolRef(0x400cb5ec, 0x4004867c, UNIT, "jl_prev", "SCALE SETUP key table: previous field"),
     ),
     pokes=(
         Poke(0x4009ab54, expect=bytes.fromhex("7eff"), write=bytes.fromhex("7ef8"),

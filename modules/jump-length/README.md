@@ -14,8 +14,16 @@ The new pattern starts at its step 1, as on a stock change. In PER TRACK
 mode L is MASTER LENGTH; with INF the multiples fall back to EOP. A pattern
 without JUMP plays exactly as stock (CHAIN AFTER / CHAIN BEHAVIOR).
 
-`Kind.CF_PATCH`: one ROM unit (`jl.s`, 324 bytes), two `jsr` detours, four
-pokes. No DSP code. The mechanism and the addresses are in `manifest.py`'s
+## Setting it
+
+[FUNC] + [PAGE] (SCALE SETUP): JUMP is the last field, bottom right, after
+SCALE in NORMAL and after MASTER SCALE in PER TRACK. [LEFT] / [RIGHT] move
+to it (it wraps to and from the first field), the LEVEL encoder steps
+`---`, INS, EOP, 1x, 2x, 4x, 8x, 16x. `---` is "no JUMP": the pattern
+follows CHAIN BEHAVIOR / CHAIN AFTER as on stock.
+
+`Kind.CF_PATCH`: one ROM unit (`jl.s`), five detours (two in the sequencer,
+three on the SCALE SETUP page), two key-table repoints, four pokes. No DSP code. The mechanism and the addresses are in `manifest.py`'s
 docstring and `RECON.md`.
 
 Credit: Tim Hastie's [DIRECT JUMP](../direct-jump/) mapped the sequencer's
@@ -58,9 +66,19 @@ change:
 
 Every switch restarted the counter at 0 on A02.
 
+The SCALE SETUP field (port, same project, `--live-script`, the screen
+read back with `tools/emu/lcd_view.py`):
+
+- NORMAL: [RIGHT] x 3 from the first field lands on JUMP (`0x460d1e00` =
+  5); [LEFT] x 2 goes 0 -> JUMP -> 2. PER TRACK: [RIGHT] x 5 lands on it.
+- Three clockwise LEVEL steps on JUMP wrote `0xfc` (1x) into A01's byte and
+  drew `1x`; the field draws dotted when not selected and solid when it
+  is, like the stock fields, in both modes.
+
 ## Not yet
 
-- The SCALE SETUP field that sets it; until then JUMP is set by poking RAM.
+- A pattern set through the page and then played in one run (the byte the
+  page writes is the byte the sequencer runs above were poked with).
 - PER TRACK mode, MASTER LENGTH INF, the arranger and chains are reasoned
   from the disassembly, not run.
 - The validator and PATTERN SETTINGS pokes are not exercised by a run (no
